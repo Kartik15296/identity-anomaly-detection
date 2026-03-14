@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Identity Anomaly Detection — Admin</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@400;600;800&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+
+    <!-- ── HEADER ── -->
+    <header>
+        <div class="header-left">
+            <div class="logo">
+                <span class="logo-bracket">[</span>
+                <span class="logo-text">IAD</span>
+                <span class="logo-bracket">]</span>
+            </div>
+            <div class="header-title">
+                <h1>Admin Dashboard</h1>
+                <span class="header-sub">Identity Anomaly Detection System</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="admin-badge">
+                <div class="admin-avatar">KK</div>
+                <div class="admin-info">
+                    <span class="admin-name">Admin</span>
+                    <span class="admin-role">Security Operations</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- ── STATS BAR ── -->
+    <section class="stats-bar" id="stats-bar">
+        <div class="stat-card">
+            <span class="stat-value" id="stat-pending">—</span>
+            <span class="stat-label">Pending Review</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-card">
+            <span class="stat-value danger" id="stat-blocked">—</span>
+            <span class="stat-label">Blocked</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-card">
+            <span class="stat-value success" id="stat-approved">—</span>
+            <span class="stat-label">Approved</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-card">
+            <span class="stat-value warning" id="stat-avg-risk">—</span>
+            <span class="stat-label">Avg Risk Score</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-card">
+            <span class="stat-value" id="stat-users">—</span>
+            <span class="stat-label">Total Users</span>
+        </div>
+    </section>
+
+    <!-- ── MAIN CONTENT ── -->
+    <main>
+
+        <!-- Alerts section -->
+        <section class="alerts-section">
+            <div class="section-header">
+                <div class="section-title">
+                    <span class="section-icon">⚠</span>
+                    <h2>Alerts</h2>
+                    <span class="alert-count-badge" id="alert-count">0</span>
+                </div>
+                <button class="refresh-btn" onclick="loadAlerts()">↻ Refresh</button>
+            </div>
+
+            <!-- Table header -->
+            <div class="table-header">
+                <div class="col-num">#</div>
+                <div class="col-user">Employee</div>
+                <div class="col-time">Timestamp</div>
+                <div class="col-location">Location</div>
+                <div class="col-device">Device</div>
+                <div class="col-app">Application</div>
+                <div class="col-risk">Risk Score</div>
+                <div class="col-reason">Top Reason</div>
+                <div class="col-action">Action</div>
+            </div>
+
+            <!-- Alert rows injected here by JS -->
+            <div id="alerts-container">
+                <div class="loading-state">
+                    <span class="loading-dot"></span>
+                    <span class="loading-dot"></span>
+                    <span class="loading-dot"></span>
+                    <span>Loading alerts...</span>
+                </div>
+            </div>
+
+            <!-- Empty state -->
+            <div id="empty-state" class="empty-state" style="display:none">
+                <span class="empty-icon">✓</span>
+                <p>All clear — no pending alerts</p>
+                <span>The system will notify you when suspicious activity is detected.</span>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ── TOAST NOTIFICATION ── -->
+    <div id="toast" class="toast"></div>
+
+    <!-- ── DETAIL PANEL (slide in from right) ── -->
+    <div id="detail-overlay" class="detail-overlay" onclick="closeDetail()"></div>
+    <aside id="detail-panel" class="detail-panel">
+        <div class="detail-header">
+            <h3>Event Detail</h3>
+            <button class="close-btn" onclick="closeDetail()">✕</button>
+        </div>
+        <div id="detail-content" class="detail-content"></div>
+        <div class="detail-actions">
+            <button class="btn-approve" id="detail-approve-btn">Allow Access</button>
+            <button class="btn-block" id="detail-block-btn">Block Login</button>
+        </div>
+    </aside>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
