@@ -436,6 +436,44 @@ def get_model_info():
         },
     }
 
+def get_feature_contributions(feature_vector):
+    """
+    Calculates exact linear contributions (SHAP equivalent for LR).
+    Contribution = Model_Weight * Scaled_Feature_Value
+    """
+    if _lr_model is None or _scaler is None:
+        return {}
+
+    # 1. Ensure consistent ordering matching your training data
+    # (Update this list if your model uses different feature keys)
+    features = [
+        "login_hour", "failed_attempts", "new_device", "new_country", 
+        "ip_known", "device_trust_score", "hour_deviation", 
+        "distance_km", "travel_speed_kmh", "peer_deviation"
+    ]
+    
+    raw_values = [feature_vector.get(f, 0.0) for f in features]
+    X = np.array([raw_values])
+    
+    # 2. Scale the features (StandardScaler centers the mean at 0)
+    X_scaled = _scaler.transform(X)[0]
+    
+    # 3. Extract the base LR coefficients
+    # Handle CalibratedClassifierCV wrapper if present
+    if hasattr(_lr_model, "calibrated_classifiers_"):
+        base_model = _lr_model.calibrated_classifiers_[0].estimator
+    else:
+        base_model = _lr_model
+        
+    weights = base_model.coef_[0]
+    
+    # 4. Calculate exact SHAP values
+    # Positive value = Pushes risk UP (Attack)
+    # Negative value = Pushes risk DOWN (Legitimate)
+    contributions = {features[i]: weights[i] * X_scaled[i] for i in range(len(features))}
+    
+    return contributions
+
 
 # ─────────────────────────────────────────────
 # QUICK TEST — python models_main.py
