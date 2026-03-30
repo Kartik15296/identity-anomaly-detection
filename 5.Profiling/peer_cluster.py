@@ -1,87 +1,88 @@
 # 5.Profiling/peer_cluster.py
 # Manages peer group behavioral clusters.
-# Two clear modes — read mode (fast, called per login) and
-# rebuild mode (slow, called weekly by retrain scheduler).
 #
-# Read mode  : looks up cluster stats, computes peer deviation score
-# Rebuild mode : runs k-means on behavioral features, reassigns users
+# Key improvements over the original DBSCAN version:
+#   1. Gower Distance  — handles mixed categorical + numeric features correctly.
+#      Categorical fields (dept, role, office) use 0/1 match distance, not
+#      numeric encoding, eliminating false ordinal relationships.
+#
+#   2. HDBSCAN         — no eps parameter to tune. Discovers cluster count
+#      automatically and handles variable-density populations.
+#      Uses sklearn.cluster.HDBSCAN (available in sklearn >= 1.3).
+#
+#   3. Soft membership — HDBSCAN produces per-user membership probabilities.
+#      Borderline users (below SOFT_MEMBERSHIP_THRESHOLD) get reduced peer
+#      signal weight, exposed via peer_membership_confidence on the profile.
+#
+#   4. Richer features — clustering now uses:
+#      Behavioral: avg_login_hour, login_hour_std, n_devices,
+#                  device_type_entropy, country_count, avg_failed_attempts,
+#                  total_events
+#      Org:        department, role, office (raw strings — Gower handles them)
+#
+# Read mode  : fast, called per login event
+# Rebuild mode: slow, called weekly by retrain_scheduler
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys
+import os
 from hyperparams import register_paths
 register_paths()
 
 import math
-from mock_db import (
-    PEER_CLUSTERS,
-    USER_PROFILES,
-    get_dept_encoding,
-    get_role_encoding,
-    get_office_encoding,
-)
+import numpy as np
+from collections import Counter
+from mock_db import PEER_CLUSTERS, USER_PROFILES
 from hyperparams import CLUSTERING
 
 
 # ─────────────────────────────────────────────
-# ── READ MODE FUNCTIONS ───────────────────────
-# Fast. Called during every login event.
-# Never triggers k-means or any heavy computation.
+# READ MODE FUNCTIONS
 # ─────────────────────────────────────────────
 
 def get_cluster(cluster_id):
-    """
-    Returns the full cluster dict for a given cluster_id.
-    Returns None if cluster not found.
-    """
     return PEER_CLUSTERS.get(cluster_id, None)
 
 
 def get_user_cluster(user_id):
     """
-    Returns the cluster a user belongs to.
-    Returns None if:
-        - user not found
-        - user has no cluster assigned
-        - user is a DBSCAN outlier (cluster_outlier)
-          → caller should treat as no peer group available
+    Returns the cluster a user belongs to, or None if outlier/unassigned.
     """
     profile = USER_PROFILES.get(user_id)
     if not profile:
         return None
-
     cluster_id = profile.get("peer_cluster_id")
-    if not cluster_id:
+    if not cluster_id or cluster_id == CLUSTERING["OUTLIER_CLUSTER_ID"]:
         return None
-
-    # Outlier users have no meaningful peer group
-    if cluster_id == CLUSTERING["OUTLIER_CLUSTER_ID"]:
-        return None
-
     return PEER_CLUSTERS.get(cluster_id)
 
 
+def get_user_membership_confidence(user_id):
+    """
+    Returns HDBSCAN soft membership probability for a user (0.0-1.0).
+    Falls back to 1.0 for manually seeded profiles without this field.
+    """
+    profile = USER_PROFILES.get(user_id)
+    if not profile:
+        return 0.0
+    cluster_id = profile.get("peer_cluster_id", "")
+    if cluster_id == CLUSTERING["OUTLIER_CLUSTER_ID"]:
+        return 0.0
+    return float(profile.get("peer_membership_confidence", 1.0))
+
+
 def is_common_device_type(cluster, device_type):
-    """
-    Returns True if device_type is common in this cluster.
-    """
     if not cluster:
         return False
     return device_type in cluster.get("common_device_types", [])
 
 
 def is_common_country(cluster, country):
-    """
-    Returns True if country is common in this cluster.
-    """
     if not cluster:
         return False
     return country in cluster.get("common_countries", [])
 
 
 def is_common_ip_subnet(cluster, ip_address):
-    """
-    Returns True if IP matches any common subnet in this cluster.
-    """
     if not cluster:
         return False
     subnets = cluster.get("common_ip_subnets", [])
@@ -89,18 +90,12 @@ def is_common_ip_subnet(cluster, ip_address):
 
 
 def get_cluster_typical_hours(cluster):
-    """
-    Returns list of typical login hours for this cluster.
-    """
     if not cluster:
         return []
     return cluster.get("common_login_hours", [])
 
 
 def get_cluster_members(cluster_id):
-    """
-    Returns list of user_ids in this cluster.
-    """
     cluster = PEER_CLUSTERS.get(cluster_id)
     if not cluster:
         return []
@@ -109,298 +104,282 @@ def get_cluster_members(cluster_id):
 
 def compute_peer_deviation_score(feature_vector, cluster, user_id=None):
     """
-    Computes how much a user's current login deviates from
-    their peer cluster's behavioral norms.
+    Computes how much a user's current login deviates from their peer cluster.
+    Returns 0.0 (matches cluster norms) to 1.0 (completely unlike cluster).
 
-    Uses a simplified Mahalanobis-style distance — compares
-    each signal against cluster norms and aggregates deviation.
+    Behavioral signals (80% weight): hour, device type, country, IP, failed attempts
+    Org signals (20% weight): department, role, office
 
-    Returns a score between 0.0 and 1.0:
-        0.0 → perfectly matches cluster norms
-        1.0 → completely unlike the cluster
-
-    Signals compared:
-        Behavioral:
-            - login_hour vs cluster typical hours
-            - device_type match
-            - country match
-            - ip subnet match
-            - failed_attempts vs cluster avg
-        Org attributes (NEW):
-            - department match vs cluster common departments
-            - role match vs cluster common roles
-            - office match vs cluster common offices
-
-    Org signals carry lower weight than behavioral signals
-    because org attributes change rarely (promotions, transfers)
-    and should not dominate the deviation score on their own.
+    Soft membership adjustment: borderline members get score blended toward
+    neutral (0.5) proportionally to how far below the confidence threshold they are.
     """
     if not cluster or not feature_vector:
         return 0.5
 
     behavioral_deviations = []
-    org_deviations        = []
+    org_deviations = []
 
-    # ── Login hour deviation ──────────────────────────────────────
+    # Login hour deviation
     cluster_hours = cluster.get("common_login_hours", [])
     if cluster_hours:
-        login_hour    = feature_vector.get("login_hour", 12)
-        hour_dev      = min(abs(login_hour - h) for h in cluster_hours)
-        hour_dev_norm = min(hour_dev / CLUSTERING["HOUR_DEVIATION_MAX"], 1.0)
-        behavioral_deviations.append(hour_dev_norm)
+        login_hour = feature_vector.get("login_hour", 12)
+        hour_dev = min(abs(login_hour - h) for h in cluster_hours)
+        behavioral_deviations.append(min(hour_dev / CLUSTERING["HOUR_DEVIATION_MAX"], 1.0))
 
-    # ── Device type mismatch ──────────────────────────────────────
+    # Device type
     peer_device_match = feature_vector.get("peer_device_match", 0)
     behavioral_deviations.append(0.0 if peer_device_match else 1.0)
 
-    # ── Country mismatch ──────────────────────────────────────────
+    # Country
     peer_country_match = feature_vector.get("peer_country_match", 0)
     behavioral_deviations.append(0.0 if peer_country_match else 1.0)
 
-    # ── IP subnet mismatch ────────────────────────────────────────
+    # IP subnet
     peer_ip_match = feature_vector.get("peer_ip_match", 0)
     behavioral_deviations.append(0.0 if peer_ip_match else 1.0)
 
-    # ── Failed attempts vs cluster avg ────────────────────────────
+    # Failed attempts vs cluster avg
     cluster_avg_fails = cluster.get("avg_failed_attempts", 0.0)
-    current_fails     = feature_vector.get("failed_attempts", 0)
-    fail_norm         = min(abs(current_fails - cluster_avg_fails) / CLUSTERING["FAILED_ATTEMPTS_MAX"], 1.0)
-    behavioral_deviations.append(fail_norm)
+    current_fails = feature_vector.get("failed_attempts", 0)
+    behavioral_deviations.append(
+        min(abs(current_fails - cluster_avg_fails) / CLUSTERING["FAILED_ATTEMPTS_MAX"], 1.0)
+    )
 
-    # ── Org attribute deviations (NEW) ────────────────────────────
-    # Pull user's org attributes from their profile if user_id provided
-    # Otherwise fall back to feature_vector if caller passed them in
+    # Org attributes
     if user_id and user_id in USER_PROFILES:
-        profile    = USER_PROFILES[user_id]
-        department = profile.get("department", None)
-        role       = profile.get("role", None)
-        office     = profile.get("office", None)
+        p = USER_PROFILES[user_id]
+        department = p.get("department")
+        role = p.get("role")
+        office = p.get("office")
     else:
-        # Caller can pass org fields directly in feature_vector
-        department = feature_vector.get("department", None)
-        role       = feature_vector.get("role", None)
-        office     = feature_vector.get("office", None)
+        department = feature_vector.get("department")
+        role = feature_vector.get("role")
+        office = feature_vector.get("office")
 
-    # Department mismatch
-    common_depts = cluster.get("common_departments", [])
-    if department and common_depts:
-        org_deviations.append(0.0 if department in common_depts else 1.0)
+    if department and cluster.get("common_departments"):
+        org_deviations.append(0.0 if department in cluster["common_departments"] else 1.0)
+    if role and cluster.get("common_roles"):
+        org_deviations.append(0.0 if role in cluster["common_roles"] else 1.0)
+    if office and cluster.get("common_offices"):
+        org_deviations.append(0.0 if office in cluster["common_offices"] else 1.0)
 
-    # Role mismatch
-    common_roles = cluster.get("common_roles", [])
-    if role and common_roles:
-        org_deviations.append(0.0 if role in common_roles else 1.0)
-
-    # Office mismatch
-    common_offices = cluster.get("common_offices", [])
-    if office and common_offices:
-        org_deviations.append(0.0 if office in common_offices else 1.0)
-
-    # ── Weighted aggregate ────────────────────────────────────────
-    # Behavioral signals carry 80% weight — org signals carry 20%
-    # Org attributes change rarely so they shouldn't dominate
-    # But a completely mismatched org profile is still a signal
+    # Weighted aggregate
     behavioral_score = sum(behavioral_deviations) / len(behavioral_deviations) if behavioral_deviations else 0.5
-    org_score        = sum(org_deviations)        / len(org_deviations)        if org_deviations        else 0.0
+    org_score = sum(org_deviations) / len(org_deviations) if org_deviations else 0.0
 
-    final_score = round(
+    raw_score = round(
         CLUSTERING["PEER_DEV_BEHAVIORAL_WEIGHT"] * behavioral_score +
-        CLUSTERING["PEER_DEV_ORG_WEIGHT"]        * org_score,
+        CLUSTERING["PEER_DEV_ORG_WEIGHT"] * org_score,
         3
     )
-    return final_score
+
+    # Soft membership adjustment: blend toward neutral for borderline members
+    if user_id:
+        confidence = get_user_membership_confidence(user_id)
+        threshold = CLUSTERING["SOFT_MEMBERSHIP_THRESHOLD"]
+        if confidence < threshold:
+            blend_weight = confidence / threshold  # 0.0 at outlier → 1.0 at threshold
+            raw_score = round(blend_weight * raw_score + (1 - blend_weight) * 0.5, 3)
+
+    return raw_score
 
 
 # ─────────────────────────────────────────────
-# ── REBUILD MODE FUNCTIONS ────────────────────
-# Slow. Called weekly by 8.feedback/retrain_scheduler.py
-# NEVER called during a live login scoring request.
+# GOWER DISTANCE
+# ─────────────────────────────────────────────
+
+def _gower_distance(vec_a, vec_b):
+    """
+    Gower distance between two feature dicts.
+    Numeric: |a - b| / range  → 0-1
+    Categorical: 0 if same string, 1 if different
+    Final = mean across all features.
+    """
+    numeric_keys = CLUSTERING["GOWER_NUMERIC_FEATURES"]
+    categorical_keys = CLUSTERING["GOWER_CATEGORICAL_FEATURES"]
+    ranges = CLUSTERING["GOWER_NUMERIC_RANGES"]
+
+    distances = []
+
+    for key in numeric_keys:
+        a = vec_a.get(key)
+        b = vec_b.get(key)
+        if a is None or b is None:
+            continue
+        r = ranges.get(key, 1)
+        distances.append(0.0 if r == 0 else min(abs(a - b) / r, 1.0))
+
+    for key in categorical_keys:
+        a = vec_a.get(key)
+        b = vec_b.get(key)
+        if a is None or b is None:
+            continue
+        distances.append(0.0 if a == b else 1.0)
+
+    return sum(distances) / len(distances) if distances else 1.0
+
+
+def _build_gower_distance_matrix(feature_vecs, user_ids):
+    """
+    Builds symmetric Gower Distance matrix for all users.
+    Returns (n, n) numpy array — D[i][j] = Gower distance between users i and j.
+    """
+    n = len(user_ids)
+    D = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = _gower_distance(feature_vecs[user_ids[i]], feature_vecs[user_ids[j]])
+            D[i][j] = d
+            D[j][i] = d
+    return D
+
+
+# ─────────────────────────────────────────────
+# REBUILD MODE FUNCTIONS
 # ─────────────────────────────────────────────
 
 def _build_user_feature_vector(user_id):
     """
-    Builds behavioral + org feature vector for a user
-    for the purpose of k-means clustering.
+    Builds richer behavioral + org feature vector for HDBSCAN clustering.
 
-    Behavioral features (what the user does):
-        avg_login_hour  — average hour of day they log in
-        n_devices       — how many devices they use
-        total_events    — how active they are
+    Numeric behavioral:
+        avg_login_hour, login_hour_std  — computed from time-decayed hour weights
+        n_devices, device_type_entropy  — device usage diversity
+        country_count                   — geographic spread
+        avg_failed_attempts             — failure rate
+        total_events                    — activity level
 
-    Org features (who the user is — from Okta):
-        dept_encoded    — department as numeric index
-        role_encoded    — role as numeric index
-        office_encoded  — office location as numeric index
-
-    All features are normalized to 0–1 before clustering
-    so no single feature dominates the distance calculation.
-    Normalization ranges defined in _NORM_RANGES below.
+    Categorical org (raw strings — NOT integer-encoded):
+        department, role, office
     """
     profile = USER_PROFILES.get(user_id)
     if not profile:
         return None
 
-    typical_hours = profile.get("typical_login_hours", [])
-    avg_hour      = sum(typical_hours) / len(typical_hours) if typical_hours else 12.0
-    n_devices     = len(profile.get("known_devices", []))
-    total_events  = profile.get("total_events", 0)
+    # Login hour stats from time-decayed weights
+    hour_weights = profile.get("login_hour_weights", {})
+    if hour_weights:
+        total_w = sum(e["weight"] for e in hour_weights.values())
+        avg_hour = (
+            sum(int(h) * e["weight"] for h, e in hour_weights.items()) / total_w
+            if total_w else 12.0
+        )
+        variance = (
+            sum(e["weight"] * (int(h) - avg_hour) ** 2 for h, e in hour_weights.items()) / total_w
+            if total_w else 0.0
+        )
+        hour_std = math.sqrt(variance)
+    else:
+        typical = profile.get("typical_login_hours", [])
+        avg_hour = sum(typical) / len(typical) if typical else 12.0
+        hour_std = (
+            math.sqrt(sum((h - avg_hour) ** 2 for h in typical) / len(typical))
+            if len(typical) > 1 else 0.0
+        )
 
-    # Org attributes — encoded via registry
-    dept_encoded   = get_dept_encoding(profile.get("department", "Unknown"))
-    role_encoded   = get_role_encoding(profile.get("role", "Unknown"))
-    office_encoded = get_office_encoding(profile.get("office", "Unknown"))
+    # Device features
+    known_devices = profile.get("known_devices", [])
+    n_devices = max(1, len(known_devices))
+    device_type_entropy = profile.get("device_type_entropy", 0.0)
+    if device_type_entropy == 0.0 and n_devices > 1:
+        p = 1.0 / n_devices
+        device_type_entropy = -n_devices * p * math.log(p)
 
     return {
-        "user_id"       : user_id,
-        # Raw values — normalized inside rebuild_clusters before k-means
-        "avg_login_hour": avg_hour,
-        "n_devices"     : n_devices,
-        "total_events"  : total_events,
-        "dept_encoded"  : dept_encoded,
-        "role_encoded"  : role_encoded,
-        "office_encoded": office_encoded,
+        "user_id"             : user_id,
+        # Numeric
+        "avg_login_hour"      : round(avg_hour, 2),
+        "login_hour_std"      : round(hour_std, 2),
+        "n_devices"           : float(n_devices),
+        "device_type_entropy" : round(device_type_entropy, 3),
+        "country_count"       : float(profile.get("country_count", len(profile.get("known_countries", ["?"])))),
+        "avg_failed_attempts" : float(profile.get("avg_failed_attempts", 0.0)),
+        "total_events"        : float(profile.get("total_events", 0)),
+        # Categorical (raw strings)
+        "department"          : profile.get("department", "Unknown"),
+        "role"                : profile.get("role", "Unknown"),
+        "office"              : profile.get("office", "Unknown"),
     }
-
-
-# Normalization ranges — loaded from 1.config/hyperparams.py
-# Tweak values there, not here.
-_NORM_RANGES = CLUSTERING["NORM_RANGES"]
-
-
-def _normalize_vector(vec, keys):
-    """
-    Normalizes feature values to 0–1 range using _NORM_RANGES.
-    Returns a new dict with normalized values.
-    Clips values outside the defined range to 0 or 1.
-    """
-    normalized = {}
-    for key in keys:
-        if key not in vec:
-            normalized[key] = 0.0
-            continue
-        min_val, max_val = _NORM_RANGES.get(key, (0, 1))
-        if max_val == min_val:
-            normalized[key] = 0.0
-        else:
-            normalized[key] = max(0.0, min(1.0, (vec[key] - min_val) / (max_val - min_val)))
-    return normalized
-
-
-def _euclidean_distance(vec1, vec2, keys):
-    """Simple euclidean distance between two dicts on given keys."""
-    return math.sqrt(sum((vec1[k] - vec2[k]) ** 2 for k in keys if k in vec1 and k in vec2))
 
 
 def rebuild_clusters():
     """
-    Runs DBSCAN clustering on all user behavioral + org feature vectors.
-    Replaces k-means — no need to specify n_clusters upfront.
-
-    Called weekly by 8.feedback/retrain_scheduler — never during live scoring.
-
-    Why DBSCAN over k-means:
-        - Discovers number of clusters automatically
-        - Users who don't fit any cluster become outliers (cluster_outlier)
-        - Handles clusters of unequal size and arbitrary shape
-        - Outlier label is meaningful — those users get full individual profiling
+    Runs HDBSCAN with Gower Distance on all user feature vectors.
+    No need to specify number of clusters — HDBSCAN discovers them.
 
     Steps:
-        1. Build feature vectors for all users (behavioral + org)
-        2. Normalize all features to 0–1 range
-        3. Run DBSCAN using eps and min_samples from hyperparams
-        4. Users labeled -1 by DBSCAN → assigned to OUTLIER_CLUSTER_ID
+        1. Build richer feature vectors (behavioral + categorical org)
+        2. Compute pairwise Gower Distance matrix
+        3. Run HDBSCAN on precomputed distance matrix (metric='precomputed')
+        4. Extract soft membership probabilities, store on user profiles
         5. Update PEER_CLUSTERS and USER_PROFILES in memory
 
-    Hyperparams used (from 1.config/hyperparams.py):
-        CLUSTERING["DBSCAN_EPS"]         — neighborhood radius
-        CLUSTERING["DBSCAN_MIN_SAMPLES"] — min users to form a cluster
-        CLUSTERING["OUTLIER_CLUSTER_ID"] — label for unclassified users
+    Returns: { user_id: cluster_id } assignments dict
     """
-    from sklearn.cluster import DBSCAN
-    import numpy as np
+    from sklearn.cluster import HDBSCAN
 
-    CLUSTER_KEYS = [
-        "avg_login_hour",
-        "n_devices",
-        "total_events",
-        "dept_encoded",
-        "role_encoded",
-        "office_encoded",
-    ]
+    min_cluster_size = CLUSTERING["HDBSCAN_MIN_CLUSTER_SIZE"]
+    outlier_id = CLUSTERING["OUTLIER_CLUSTER_ID"]
 
-    eps         = CLUSTERING["DBSCAN_EPS"]
-    min_samples = CLUSTERING["DBSCAN_MIN_SAMPLES"]
-    outlier_id  = CLUSTERING["OUTLIER_CLUSTER_ID"]
-
-    # ── Step 1: Build raw vectors ─────────────────────────────────
-    raw_vectors = {}
+    # Step 1: Build feature vectors
+    raw_vecs = {}
     for user_id in USER_PROFILES:
         vec = _build_user_feature_vector(user_id)
         if vec:
-            raw_vectors[user_id] = vec
+            raw_vecs[user_id] = vec
 
-    if len(raw_vectors) < min_samples:
-        print(f"[WARN] Not enough users ({len(raw_vectors)}) for DBSCAN (min_samples={min_samples}). Skipping rebuild.")
+    if len(raw_vecs) < min_cluster_size:
+        print(f"[WARN] Not enough users ({len(raw_vecs)}) for HDBSCAN. Skipping rebuild.")
         return {}
 
-    user_ids = list(raw_vectors.keys())
+    user_ids = list(raw_vecs.keys())
+    print(f"[INFO] Building Gower Distance matrix for {len(user_ids)} users...")
 
-    # ── Step 2: Normalize to 0–1 ─────────────────────────────────
-    norm_vectors = {
-        uid: _normalize_vector(raw_vectors[uid], CLUSTER_KEYS)
-        for uid in user_ids
+    # Step 2: Gower Distance matrix
+    D = _build_gower_distance_matrix(raw_vecs, user_ids)
+    print(f"[INFO] Distance matrix: shape={D.shape}, mean={D.mean():.3f}, max={D.max():.3f}")
+
+    # Step 3: HDBSCAN on precomputed distances
+    hdb_kwargs = {
+        "min_cluster_size"    : min_cluster_size,
+        "min_samples"         : CLUSTERING["HDBSCAN_MIN_SAMPLES"],
+        "metric"              : "precomputed",
+        "allow_single_cluster": CLUSTERING["HDBSCAN_ALLOW_SINGLE_CLUSTER"],
     }
 
-    # Build matrix for sklearn — rows = users, cols = features
-    X = np.array([
-        [norm_vectors[uid][k] for k in CLUSTER_KEYS]
-        for uid in user_ids
-    ])
+    clusterer = HDBSCAN(**hdb_kwargs)
+    clusterer.fit(D)
 
-    # ── Step 3: Run DBSCAN ────────────────────────────────────────
-    db          = DBSCAN(eps=eps, min_samples=min_samples, metric="euclidean")
-    labels      = db.fit_predict(X)
-    # labels[i] = cluster index for user_ids[i]
-    # labels[i] = -1 → outlier, doesn't fit any cluster
+    labels = clusterer.labels_
+    probabilities = clusterer.probabilities_
 
-    unique_labels  = set(labels)
-    n_clusters     = len(unique_labels - {-1})
-    n_outliers     = list(labels).count(-1)
+    unique_labels = set(labels)
+    n_clusters = len(unique_labels - {-1})
+    n_outliers = list(labels).count(-1)
+    print(f"[INFO] HDBSCAN: {n_clusters} clusters, {n_outliers} outliers (min_cluster_size={min_cluster_size})")
 
-    print(f"[INFO] DBSCAN found {n_clusters} clusters, {n_outliers} outliers "
-          f"(eps={eps}, min_samples={min_samples})")
+    # Step 4: Build assignments and update user profiles
+    cluster_id_map = {label: f"cluster_dynamic_{label}" for label in unique_labels if label != -1}
+    cluster_id_map[-1] = outlier_id
 
-    # ── Step 4: Build assignment dict ────────────────────────────
-    # Map cluster index → cluster_id string
-    cluster_id_map = {
-        label: f"cluster_dynamic_{label}"
-        for label in unique_labels if label != -1
-    }
-    cluster_id_map[-1] = outlier_id  # outliers get special ID
+    assignments = {user_ids[i]: cluster_id_map[labels[i]] for i in range(len(user_ids))}
 
-    assignments = {
-        user_ids[i]: cluster_id_map[labels[i]]
-        for i in range(len(user_ids))
-    }
-
-    # ── Step 5: Update USER_PROFILES ─────────────────────────────
-    for uid, cluster_id in assignments.items():
+    for i, uid in enumerate(user_ids):
         if uid in USER_PROFILES:
-            USER_PROFILES[uid]["peer_cluster_id"] = cluster_id
+            USER_PROFILES[uid]["peer_cluster_id"] = assignments[uid]
+            USER_PROFILES[uid]["peer_membership_confidence"] = round(float(probabilities[i]), 4)
 
-    # ── Step 6: Rebuild PEER_CLUSTERS entries ────────────────────
+    # Step 5: Rebuild PEER_CLUSTERS
     for label in unique_labels:
         cluster_id = cluster_id_map[label]
-        members    = [uid for uid, cid in assignments.items() if cid == cluster_id]
+        members = [uid for uid, cid in assignments.items() if cid == cluster_id]
 
         if label == -1:
-            # Outlier cluster — minimal entry, these users use individual profiling
             PEER_CLUSTERS[cluster_id] = {
                 "cluster_id"         : cluster_id,
                 "label"              : "Outliers — individual profiling",
                 "member_user_ids"    : members,
                 "is_outlier_cluster" : True,
-                # Empty norms — outlier users rely on their individual profile
                 "common_login_hours" : [],
                 "common_countries"   : [],
                 "common_ip_subnets"  : [],
@@ -412,38 +391,36 @@ def rebuild_clusters():
             }
             continue
 
-        # Regular cluster — aggregate norms from members
-        all_hours     = []
-        all_devices   = []
-        all_countries = []
-        all_depts     = []
-        all_roles     = []
-        all_offices   = []
-        total_fails   = 0
+        all_hours, all_countries, all_devices, all_depts, all_roles, all_offices = [], [], [], [], [], []
+        total_fails = 0.0
 
         for uid in members:
             p = USER_PROFILES.get(uid, {})
             all_hours     += p.get("typical_login_hours", [])
-            all_devices   += p.get("known_devices", [])
             all_countries += p.get("known_countries", [])
+            all_devices   += list(p.get("device_trust", {}).keys())
             all_depts.append(p.get("department", "Unknown"))
             all_roles.append(p.get("role", "Unknown"))
             all_offices.append(p.get("office", "Unknown"))
-            total_fails   += p.get("avg_failed_attempts", 0)
+            total_fails += p.get("avg_failed_attempts", 0.0)
+
+        top_depts   = [d for d, _ in Counter(all_depts).most_common(3)]
+        top_roles   = [r for r, _ in Counter(all_roles).most_common(3)]
+        top_offices = [o for o, _ in Counter(all_offices).most_common(3)]
 
         PEER_CLUSTERS[cluster_id] = {
-            "cluster_id"          : cluster_id,
-            "label"               : f"Dynamic Cluster {label}",
-            "member_user_ids"     : members,
-            "is_outlier_cluster"  : False,
-            "common_login_hours"  : sorted(set(all_hours)),
-            "common_countries"    : list(set(all_countries)),
-            "common_ip_subnets"   : [],
-            "common_device_types" : list(set(all_devices)),
-            "common_departments"  : list(set(all_depts)),
-            "common_roles"        : list(set(all_roles)),
-            "common_offices"      : list(set(all_offices)),
-            "avg_failed_attempts" : round(total_fails / len(members), 3) if members else 0,
+            "cluster_id"         : cluster_id,
+            "label"              : f"Dynamic Cluster {label}",
+            "member_user_ids"    : members,
+            "is_outlier_cluster" : False,
+            "common_login_hours" : sorted(set(all_hours)),
+            "common_countries"   : list(set(all_countries)),
+            "common_ip_subnets"  : [],
+            "common_device_types": list(set(all_devices)),
+            "common_departments" : top_depts,
+            "common_roles"       : top_roles,
+            "common_offices"     : top_offices,
+            "avg_failed_attempts": round(total_fails / len(members), 3) if members else 0,
         }
 
     return assignments
@@ -456,55 +433,54 @@ if __name__ == "__main__":
 
     print("── Read mode ─────────────────────────────────────────")
     cluster = get_user_cluster("u01")
-    print(f"Kartik cluster     : {cluster['label']}")
-    print(f"Common hours       : {get_cluster_typical_hours(cluster)}")
-    print(f"MacBook common?    : {is_common_device_type(cluster, 'MacBook')}")
-    print(f"Windows common?    : {is_common_device_type(cluster, 'Windows')}")
-    print(f"India common?      : {is_common_country(cluster, 'India')}")
-    print(f"UK common?         : {is_common_country(cluster, 'UK')}")
-    print(f"10.0.1.x common?   : {is_common_ip_subnet(cluster, '10.0.1.45')}")
-    print(f"82.45.x common?    : {is_common_ip_subnet(cluster, '82.45.12.99')}")
+    if cluster:
+        print(f"Kartik cluster     : {cluster['label']}")
+        print(f"Common hours       : {get_cluster_typical_hours(cluster)}")
+        print(f"Common depts       : {cluster.get('common_departments', [])}")
+    else:
+        print("Kartik: no cluster (will be assigned on rebuild)")
 
-    print("\n── Peer deviation score ──────────────────────────────")
-    normal_features = {
-        "login_hour": 9, "failed_attempts": 0,
-        "peer_device_match": 1, "peer_country_match": 1, "peer_ip_match": 1
-    }
-    attack_features = {
-        "login_hour": 3, "failed_attempts": 3,
-        "peer_device_match": 0, "peer_country_match": 0, "peer_ip_match": 0
-    }
-    # Org mismatch only — behavioral looks fine but wrong dept/role/office
-    org_mismatch_features = {
-        "login_hour": 9, "failed_attempts": 0,
-        "peer_device_match": 1, "peer_country_match": 1, "peer_ip_match": 1,
-        "department": "Finance", "role": "Finance Analyst", "office": "New York"
-    }
+    print(f"\nKartik membership confidence : {get_user_membership_confidence('u01')}")
+    print(f"Sneha  membership confidence : {get_user_membership_confidence('u04')}")
 
-    print(f"Normal login (with org)      : {compute_peer_deviation_score(normal_features, cluster, user_id='u01')}")
-    print(f"Attack login (with org)      : {compute_peer_deviation_score(attack_features, cluster, user_id='u01')}")
-    print(f"Org mismatch only (no user)  : {compute_peer_deviation_score(org_mismatch_features, cluster)}")
-    print(f"Normal login (no user_id)    : {compute_peer_deviation_score(normal_features, cluster)}")
-
-    print("\n── Feature vectors with org attributes ───────────────")
+    print("\n── Feature vectors (richer format) ───────────────────")
     for uid in ["u01", "u02", "u03", "u04"]:
         vec = _build_user_feature_vector(uid)
-        p   = USER_PROFILES[uid]
-        print(f"\n  {p['name']} ({p['department']} / {p['role']} / {p['office']})")
-        print(f"  Raw    : hour={vec['avg_login_hour']}, devices={vec['n_devices']}, events={vec['total_events']}")
-        print(f"  Org    : dept={vec['dept_encoded']}, role={vec['role_encoded']}, office={vec['office_encoded']}")
-        norm = _normalize_vector(vec, ["avg_login_hour","n_devices","total_events","dept_encoded","role_encoded","office_encoded"])
-        print(f"  Normed : { {k: round(v,3) for k,v in norm.items()} }")
+        if vec:
+            p = USER_PROFILES[uid]
+            print(f"\n  {p['name']} ({p['department']} / {p['role']} / {p['office']})")
+            print(f"    avg_hour={vec['avg_login_hour']}  hour_std={vec['login_hour_std']}"
+                  f"  n_devices={vec['n_devices']}  entropy={vec['device_type_entropy']}")
+            print(f"    countries={vec['country_count']}  avg_fails={vec['avg_failed_attempts']}"
+                  f"  events={vec['total_events']}")
 
-    print("\n── Rebuild clusters (DBSCAN — behavioral + org) ──────")
+    print("\n── Gower Distance matrix ─────────────────────────────")
+    uids = ["u01", "u02", "u03", "u04"]
+    vecs = {uid: _build_user_feature_vector(uid) for uid in uids}
+    D = _build_gower_distance_matrix(vecs, uids)
+    print("         " + "  ".join(f"{uid:>6}" for uid in uids))
+    for i, uid_i in enumerate(uids):
+        name = USER_PROFILES[uid_i]["name"][:6]
+        row = "  ".join(f"{D[i][j]:.3f}" for j in range(len(uids)))
+        print(f"  {name:<7} {row}")
+
+    print("\n── Rebuild clusters (HDBSCAN + Gower) ────────────────")
     assignments = rebuild_clusters()
-    print(f"Assignments:")
+    print("Assignments:")
     for uid, cluster_id in assignments.items():
-        name = USER_PROFILES[uid]['name']
-        dept = USER_PROFILES[uid]['department']
-        print(f"  {name:<10} ({dept:<15}) → {cluster_id}")
+        name = USER_PROFILES[uid]["name"]
+        dept = USER_PROFILES[uid]["department"]
+        conf = USER_PROFILES[uid].get("peer_membership_confidence", "n/a")
+        print(f"  {name:<10} ({dept:<15}) → {cluster_id}  confidence={conf}")
 
-    print("\n── Fallback test (unknown dept) ──────────────────────")
-    from mock_db import get_dept_encoding
-    print(f"Known dept    : {get_dept_encoding('Engineering')}")
-    print(f"Unknown dept  : {get_dept_encoding('Marketing')}")  # triggers warning + dynamic assign
+    print("\n── Peer deviation scores ─────────────────────────────")
+    cluster = get_user_cluster("u01")
+    if cluster:
+        normal = {"login_hour": 9, "failed_attempts": 0,
+                  "peer_device_match": 1, "peer_country_match": 1, "peer_ip_match": 1}
+        attack = {"login_hour": 3, "failed_attempts": 3,
+                  "peer_device_match": 0, "peer_country_match": 0, "peer_ip_match": 0}
+        print(f"  Normal login deviation : {compute_peer_deviation_score(normal, cluster, user_id='u01')}")
+        print(f"  Attack login deviation : {compute_peer_deviation_score(attack, cluster, user_id='u01')}")
+    else:
+        print("  (Run rebuild_clusters first to populate clusters)")

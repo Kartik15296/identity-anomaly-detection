@@ -6,13 +6,13 @@
 # This file has no ML — pure profile read/write logic.
 # Called by cold_start.py and extractor.py
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys
+import os
 from hyperparams import register_paths
 register_paths()
 
 from mock_db import USER_PROFILES
-from hyperparams import TRUST
+from hyperparams import TRUST, CLUSTERING
 
 # ─────────────────────────────────────────────
 # DEVICE TRUST SETTINGS — loaded from 1.config/hyperparams.py
@@ -222,29 +222,74 @@ def add_known_ip(profile, ip_address):
         profile["known_ips"].append(ip_address)
 
 
-def update_login_hours(profile, login_hour):
+def update_login_hours(profile, login_hour, current_timestamp=None):
     """
-    Updates the user's typical login hours using a rolling window.
-    Keeps the last LOGIN_HOUR_WINDOW hours.
-    Deduplicates — only unique hours stored.
+    Updates the user's typical login hours using exponential time-decay.
+
+    Instead of a simple deduped set, we maintain a weighted frequency
+    map: { hour -> weight } where weight decays over time.
+
+    On each legitimate login:
+        1. Apply decay to all existing hour weights based on time elapsed.
+        2. Add 1.0 to the weight of the current login hour.
+        3. Drop any hours whose weight has fallen below HOUR_DECAY_MIN_WEIGHT.
+        4. Update the flat list in typical_login_hours for backward compat.
+
+    This means:
+        - A user who used to log in at 3am but switched to 9am will
+          gradually lose the 3am signal instead of keeping it forever.
+        - The transition happens over weeks, not overnight.
+        - Sudden schedule changes (after travel, after changing roles)
+          adapt naturally without manual intervention.
 
     Called after every confirmed legitimate login.
     """
     if not profile:
         return
 
-    if "typical_login_hours" not in profile:
-        profile["typical_login_hours"] = []
+    decay_factor  = CLUSTERING["HOUR_DECAY_FACTOR"]
+    min_weight    = CLUSTERING["HOUR_DECAY_MIN_WEIGHT"]
 
-    hours = profile["typical_login_hours"]
+    from datetime import datetime, timezone
 
-    # Add current hour if not already there
-    if login_hour not in hours:
-        hours.append(login_hour)
+    # Parse current timestamp or use now
+    if current_timestamp:
+        try:
+            now = datetime.strptime(current_timestamp, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+    else:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    # Keep only the most recent window
-    # Since hours are 0–23 we deduplicate rather than strictly window
-    profile["typical_login_hours"] = list(set(hours))
+    # Load existing weighted hour map
+    # Format: { "9": {"weight": 0.85, "last_seen": "2026-03-12 09:00:00"} }
+    hour_weights = profile.get("login_hour_weights", {})
+
+    # Apply time-decay to all existing entries
+    surviving = {}
+    for h_str, entry in hour_weights.items():
+        last_seen_str = entry.get("last_seen", "2026-01-01 00:00:00")
+        try:
+            last_seen = datetime.strptime(last_seen_str, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            last_seen = now
+        hours_elapsed = max(0, (now - last_seen).total_seconds() / 3600)
+        decayed = entry["weight"] * (decay_factor ** hours_elapsed)
+        if decayed >= min_weight:
+            surviving[h_str] = {"weight": round(decayed, 4), "last_seen": last_seen_str}
+
+    # Add current login hour
+    h_key = str(login_hour)
+    current_weight = surviving.get(h_key, {}).get("weight", 0.0)
+    surviving[h_key] = {
+        "weight"   : round(min(current_weight + 1.0, 10.0), 4),  # cap at 10
+        "last_seen": now.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    profile["login_hour_weights"] = surviving
+
+    # Keep flat list in sync for all downstream code that reads typical_login_hours
+    profile["typical_login_hours"] = sorted(int(h) for h in surviving.keys())
 
 
 def increment_event_count(profile):

@@ -7,8 +7,8 @@
 # Phase 2 — transition  (30–100 events) : linear blend
 # Phase 3 — mature      (100+ events)   : full individual profile
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys
+import os
 from hyperparams import register_paths
 register_paths()
 
@@ -28,6 +28,7 @@ from peer_cluster import (
     is_common_ip_subnet,
     get_cluster_typical_hours,
     compute_peer_deviation_score,
+    get_user_membership_confidence,
 )
 from hyperparams import COLD_START, CLUSTERING
 
@@ -203,14 +204,15 @@ def get_profile_signals(user_id, event):
         peer_deviation = 0.0
 
     return {
-        "phase"             : phase,
-        "profile_weight"    : weight,
-        "new_device"        : blended_new_device,
-        "new_country"       : blended_new_country,
-        "ip_known"          : blended_ip_known,
-        "device_trust_score": device_trust,
-        "hour_deviation"    : blended_hour_dev,
-        "peer_deviation"    : peer_deviation,
+        "phase"                    : phase,
+        "profile_weight"           : weight,
+        "new_device"               : blended_new_device,
+        "new_country"              : blended_new_country,
+        "ip_known"                 : blended_ip_known,
+        "device_trust_score"       : device_trust,
+        "hour_deviation"           : blended_hour_dev,
+        "peer_deviation"           : peer_deviation,
+        "peer_membership_confidence": get_user_membership_confidence(user_id),
     }
 
 
