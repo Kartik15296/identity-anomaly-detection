@@ -12,16 +12,12 @@
 #   3. This module compares them and flags when drift is detected
 #   4. If drift is detected → retrain_scheduler triggers model retraining
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hyperparams import register_paths
-register_paths()
-
 import math
 from scipy import stats
-from extractor import extract_features
-from mock_db import LOGIN_EVENTS
-from hyperparams import DRIFT
+
+from config.hyperparams import DRIFT
+from database.mock_db import LOGIN_EVENTS
+from features.extractor import extract_features
 
 # ─────────────────────────────────────────────
 # THRESHOLDS — loaded from 1.config/hyperparams.py

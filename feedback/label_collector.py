@@ -1,4 +1,4 @@
-# 8.feedback/label_collector.py
+# feedback/label_collector.py
 # Converts MFA outcomes and admin decisions into structured feedback labels.
 # These labels feed into:
 #   - profile_updater.py  (update user baseline)
@@ -11,18 +11,13 @@
 #   admin_approve → admin confirmed legitimate
 #   admin_block   → admin confirmed attack
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hyperparams import register_paths
-register_paths()
-
 from datetime import datetime, timezone
-from mock_db import (
+from database.mock_db import (
     FEEDBACK_LABELS,
     get_event_by_id,
     get_user_profile,
 )
-from models_main import update_online_learner
+from models.models_main import update_online_learner
 
 
 # ─────────────────────────────────────────────
@@ -90,7 +85,7 @@ def _trigger_profile_update(event, outcome, label):
     Triggers profile_updater to update user baseline
     based on the feedback outcome.
     """
-    from profile_updater import update_profile_from_feedback
+    from feedback.profile_updater import update_profile_from_feedback
     update_profile_from_feedback(event, outcome, label)
 
 
@@ -99,8 +94,8 @@ def _trigger_model_update(event, label):
     Passes the labeled event to the online learner for incremental update.
     Builds a minimal feature vector from the raw event for the model.
     """
-    from extractor import extract_features
-    from cold_start import get_profile_signals
+    from features.extractor import extract_features
+    from profiling.cold_start import get_profile_signals
 
     user_id         = event["user_id"]
     raw_features    = extract_features(event)
@@ -137,11 +132,9 @@ def count_labels_since(since_timestamp):
 
 
 # ─────────────────────────────────────────────
-# QUICK TEST — python label_collector.py
+# QUICK TEST — python -m feedback.label_collector
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    from mock_db import FEEDBACK_LABELS
-
     print(f"Existing labels in mock_db : {len(FEEDBACK_LABELS)}")
 
     print("\n── MFA pass — Arjun Singapore travel confirmed legit ──")

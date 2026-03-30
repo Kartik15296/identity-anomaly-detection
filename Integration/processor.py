@@ -1,4 +1,4 @@
-# Integration/processor.py
+# integration/processor.py
 # The single entry point for the full login scoring pipeline.
 # Takes one raw login event, runs every layer in order,
 # returns a complete result dict.
@@ -7,20 +7,16 @@
 # This is what the terminal simulator will call for live testing.
 #
 # Pipeline order:
-#   1. Feature extraction    (4.features/extractor.py)
-#   2. Profile signals       (5.Profiling/cold_start.py)
+#   1. Feature extraction    (features/extractor.py)
+#   2. Profile signals       (profiling/cold_start.py)
 #   3. Merge feature vector  (raw + profile combined)
-#   4. Risk scoring          (7.scoring/risk_engine.py)
+#   4. Risk scoring          (scoring/risk_engine.py)
 #   5. Return full result
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hyperparams import register_paths
-register_paths()
-
-from extractor import extract_features
-from cold_start import get_profile_signals
-from risk_engine import compute_full_result
+from database.mock_db import LOGIN_EVENTS
+from features.extractor import extract_features
+from profiling.cold_start import get_profile_signals
+from scoring.risk_engine import compute_full_result
 
 
 def process_login_event(event):
@@ -45,12 +41,12 @@ def process_login_event(event):
     user_id = event["user_id"]
 
     # ── Step 1: Raw feature extraction ───────────────────────────
-    # 4.features/extractor.py
+    # features/extractor.py
     # Login hour, device/country/IP checks, geo distance, travel speed
     raw_features = extract_features(event)
 
     # ── Step 2: Profile signals ───────────────────────────────────
-    # 5.Profiling/cold_start.py
+    # profiling/cold_start.py
     # Peer deviation, cold start phase, blended profile signals
     profile_signals = get_profile_signals(user_id, event)
 
@@ -60,8 +56,8 @@ def process_login_event(event):
     feature_vector = {**raw_features, **profile_signals}
 
     # ── Step 4: Score ─────────────────────────────────────────────
-    # 7.scoring/risk_engine.py
-    # Calls 6.models/main.py for anomaly_score + attack_probability
+    # scoring/risk_engine.py
+    # Calls models/models_main.py for anomaly_score + attack_probability
     # Combines all signals into risk_score 0–100
     # Returns action + reason codes
     result = compute_full_result(feature_vector, event=event)
@@ -85,11 +81,9 @@ def process_login_event(event):
 
 
 # ─────────────────────────────────────────────
-# QUICK TEST — python processor.py
+# QUICK TEST — python -m integration.processor
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    from mock_db import LOGIN_EVENTS
-
     test_cases = [
         ("e003", "Normal login    — Kartik, office"),
         ("e011", "Attack          — Kartik, London 3am"),

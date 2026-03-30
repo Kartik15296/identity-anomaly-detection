@@ -1,4 +1,4 @@
-# 8.feedback/retrain_scheduler.py
+# feedback/retrain_scheduler.py
 # Monitors retraining triggers and fires model retraining when conditions are met.
 #
 # Three independent triggers — any one fires retraining:
@@ -8,18 +8,14 @@
 #
 # Also handles weekly DBSCAN cluster rebuild.
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hyperparams import register_paths
-register_paths()
-
 from datetime import datetime, timedelta, timezone
-from hyperparams import RETRAINING, CLUSTERING
-from mock_db import LOGIN_EVENTS, FEEDBACK_LABELS
-from label_collector import get_all_labels, count_labels_since
-from drift_monitor import check_drift
-from extractor import extract_features
-from peer_cluster import rebuild_clusters
+
+from config.hyperparams import CLUSTERING, RETRAINING
+from database.mock_db import FEEDBACK_LABELS, LOGIN_EVENTS
+from features.drift_monitor import check_drift
+from features.extractor import extract_features
+from feedback.label_collector import count_labels_since, get_all_labels
+from profiling.peer_cluster import rebuild_clusters
 
 
 # ─────────────────────────────────────────────
@@ -267,7 +263,7 @@ def run_scheduler():
 
 
 # ─────────────────────────────────────────────
-# QUICK TEST — python retrain_scheduler.py
+# QUICK TEST — python -m feedback.retrain_scheduler
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
 

@@ -1,13 +1,8 @@
-# 7.scoring/explainer.py
+# scoring/explainer.py
 # Produces human-readable reason codes using exact SHAP values from the ML layer.
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hyperparams import register_paths
-register_paths()
-
-from hyperparams import SCORING
-from models_main import get_feature_contributions
+from config.hyperparams import SCORING
+from models.models_main import get_feature_contributions
 
 # ─────────────────────────────────────────────
 # REASON CODE TEMPLATES
@@ -31,7 +26,11 @@ def get_reason_codes(feature_vector, event_context=None):
     contributions = get_feature_contributions(feature_vector)
 
     if not contributions:
-        return ["No specific anomaly indicators detected."]
+        return [{
+            "feature": "general",
+            "contribution": 0.0,
+            "reason": "No specific anomaly indicators detected.",
+        }]
 
     # 2. Sort features by highest positive risk contribution
     # We only care about features that pushed the attack probability UP
@@ -55,13 +54,21 @@ def get_reason_codes(feature_vector, event_context=None):
             else:
                 msg = msg.replace(" ({country})", "")
             
-            reason_codes.append(msg)
+            reason_codes.append({
+                "feature": feat,
+                "contribution": round(float(shap_value), 5),
+                "reason": msg,
+            })
         
         if len(reason_codes) >= top_n:
             break
             
     # Fallback if the attack was caused by complex latent patterns
     if not reason_codes:
-        reason_codes.append("Anomaly detected via complex multivariate patterns.")
+        reason_codes.append({
+            "feature": "general",
+            "contribution": 0.0,
+            "reason": "Anomaly detected via complex multivariate patterns.",
+        })
 
     return reason_codes

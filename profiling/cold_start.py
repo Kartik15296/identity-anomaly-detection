@@ -7,30 +7,26 @@
 # Phase 2 — transition  (30–100 events) : linear blend
 # Phase 3 — mature      (100+ events)   : full individual profile
 
-import sys
-import os
-from hyperparams import register_paths
-register_paths()
-
-from user_profile import (
+from config.hyperparams import CLUSTERING, COLD_START
+from database.mock_db import LOGIN_EVENTS, USER_PROFILES
+from profiling.peer_cluster import (
+    compute_peer_deviation_score,
+    get_cluster_typical_hours,
+    get_user_cluster,
+    get_user_membership_confidence,
+    is_common_country,
+    is_common_device_type,
+    is_common_ip_subnet,
+)
+from profiling.user_profile import (
+    get_device_trust,
+    get_hour_deviation,
     get_profile,
+    increment_event_count,
     is_known_device,
     is_known_country,
     is_known_ip,
-    get_hour_deviation,
-    get_device_trust,
-    increment_event_count,
 )
-from peer_cluster import (
-    get_user_cluster,
-    is_common_device_type,
-    is_common_country,
-    is_common_ip_subnet,
-    get_cluster_typical_hours,
-    compute_peer_deviation_score,
-    get_user_membership_confidence,
-)
-from hyperparams import COLD_START, CLUSTERING
 
 # ─────────────────────────────────────────────
 # PHASE THRESHOLDS — loaded from 1.config/hyperparams.py
@@ -220,9 +216,6 @@ def get_profile_signals(user_id, event):
 # QUICK TEST — python cold_start.py
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    from mock_db import LOGIN_EVENTS, USER_PROFILES
-    from hyperparams import CLUSTERING
-
     test_cases = [
         ("u01", "e003", "Mature user   — Kartik, normal office login"),
         ("u01", "e011", "Mature user   — Kartik, London attack"),

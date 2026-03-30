@@ -1,19 +1,16 @@
-# Admin_dashboard/api.py
+# admin_dashboard/api.py
 # FastAPI server — 3 endpoints only.
 # Sits between the HTML frontend and all backend Python modules.
 #
 # Run from project root:
-#   uvicorn Admin_dashboard.api:app --reload --port 8000
+#   uvicorn admin_dashboard.api:app --reload --port 8000
 #
 # Endpoints:
 #   GET  /alerts      → high risk login events for admin review
 #   POST /feedback    → admin allow / block decision
 #   GET  /stats       → summary counts for dashboard header
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hyperparams import register_paths
-register_paths()
+import os
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,12 +18,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from mock_db import LOGIN_EVENTS, USER_PROFILES, FEEDBACK_LABELS
-from extractor import extract_features
-from cold_start import get_profile_signals
-from risk_engine import compute_full_result
-from label_collector import record_feedback
-from decision import requires_admin_alert
+from database.mock_db import FEEDBACK_LABELS, LOGIN_EVENTS, USER_PROFILES
+from features.extractor import extract_features
+from feedback.label_collector import record_feedback
+from profiling.cold_start import get_profile_signals
+from scoring.decision import requires_admin_alert
+from scoring.risk_engine import compute_full_result
 
 app = FastAPI(title="Identity Anomaly Detection — Admin API")
 

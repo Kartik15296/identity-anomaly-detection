@@ -1,27 +1,23 @@
-# 4.features/extractor.py
+# features/extractor.py
 # Extracts raw features from a login event + individual user profile.
 #
 # Responsibility boundary:
 #   DOES    — raw event signals, individual profile signals, geo/travel signals
 #   DOES NOT — peer cluster signals, cold start blending, phase logic
 #
-# Peer signals and blending live in 5.Profiling/cold_start.py
-# Integration/processor.py merges both outputs into the final feature vector.
+# Peer signals and blending live in profiling/cold_start.py
+# integration/processor.py merges both outputs into the final feature vector.
 #
 # Dependency direction:
-#   4.features → mock_db (data)
-#   4.features → geo_utils (utility)
-#   4.features → hyperparams (config)
-#   NO imports from 5.Profiling
+#   features → database.mock_db (data)
+#   features → geo_utils (utility)
+#   features → config.hyperparams (config)
+#   NO imports from profiling
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hyperparams import register_paths
-register_paths()
-
-from mock_db import get_user_profile, get_user_events
-from geo_utils import resolve_ip, get_distance_km, get_travel_speed_kmh
 from datetime import datetime
+
+from database.mock_db import LOGIN_EVENTS, get_user_events, get_user_profile
+from features.geo_utils import get_distance_km, get_travel_speed_kmh, resolve_ip
 
 
 def extract_features(event):
@@ -40,8 +36,8 @@ def extract_features(event):
         distance_km         — km from last login location
         travel_speed_kmh    — km/h from last login (continuous, not binary)
 
-    These raw signals are passed to Integration/processor.py
-    which merges them with peer signals from 5.Profiling/cold_start.py
+    These raw signals are passed to integration/processor.py
+    which merges them with peer signals from profiling/cold_start.py
     """
 
     user_id  = event["user_id"]
@@ -117,11 +113,9 @@ def extract_features(event):
 
 
 # ─────────────────────────────────────────────
-# QUICK TEST — python extractor.py
+# QUICK TEST — python -m features.extractor
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    from mock_db import LOGIN_EVENTS
-
     test_cases = [
         ("e003", "Normal login  — Kartik, office, known device"),
         ("e011", "Attack        — Kartik, London 3am, unknown device"),

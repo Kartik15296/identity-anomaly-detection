@@ -1,4 +1,4 @@
-# 6.models/models_main.py
+# models/models_main.py
 # Real ML model layer — replaces the mock stub entirely.
 #
 # Two models:
@@ -26,12 +26,7 @@
 #
 # Interface unchanged from mock — nothing else in the project changes.
 
-import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from hyperparams import register_paths
-register_paths()
-
 import numpy as np
 import joblib
 from pathlib import Path
@@ -40,7 +35,10 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import StandardScaler
 
-from hyperparams import MODELS
+from config.hyperparams import MODELS
+from database.mock_db import FEEDBACK_LABELS, LOGIN_EVENTS
+from features.extractor import extract_features
+from profiling.cold_start import get_profile_signals
 
 # ─────────────────────────────────────────────
 # PATHS
@@ -129,10 +127,6 @@ def _build_normal_training_data():
     Training data = confirmed-legit events + low-suspicion heuristic events
     + synthetic normal samples to meet minimum training size.
     """
-    from mock_db import LOGIN_EVENTS, FEEDBACK_LABELS
-    from extractor import extract_features
-    from cold_start import get_profile_signals
-
     approved_ids = {f["event_id"] for f in FEEDBACK_LABELS if f["label"] == "legitimate"}
     normal_vectors = []
 
@@ -188,7 +182,7 @@ def _train_isolation_forest():
         contamination = MODELS["IF_CONTAMINATION"],
         max_samples   = "auto",
         random_state  = MODELS["IF_RANDOM_STATE"],
-        n_jobs        = -1,
+        n_jobs        = 1,
     )
     _if_model.fit(X_scaled)
     joblib.dump(_if_model,  _IF_PATH)
@@ -205,10 +199,6 @@ def _build_labeled_training_data():
     Builds (X, y) from feedback labels + pending labels + synthetic samples.
     y: 1 = attack, 0 = legitimate.
     """
-    from mock_db import LOGIN_EVENTS, FEEDBACK_LABELS
-    from extractor import extract_features
-    from cold_start import get_profile_signals
-
     event_map = {e["event_id"]: e for e in LOGIN_EVENTS}
     X, y = [], []
 
@@ -436,54 +426,12 @@ def get_model_info():
         },
     }
 
-def get_feature_contributions(feature_vector):
-    """
-    Calculates exact linear contributions (SHAP equivalent for LR).
-    Contribution = Model_Weight * Scaled_Feature_Value
-    """
-    if _lr_model is None or _scaler is None:
-        return {}
-
-    # 1. Ensure consistent ordering matching your training data
-    # (Update this list if your model uses different feature keys)
-    features = [
-        "login_hour", "failed_attempts", "new_device", "new_country", 
-        "ip_known", "device_trust_score", "hour_deviation", 
-        "distance_km", "travel_speed_kmh", "peer_deviation"
-    ]
-    
-    raw_values = [feature_vector.get(f, 0.0) for f in features]
-    X = np.array([raw_values])
-    
-    # 2. Scale the features (StandardScaler centers the mean at 0)
-    X_scaled = _scaler.transform(X)[0]
-    
-    # 3. Extract the base LR coefficients
-    # Handle CalibratedClassifierCV wrapper if present
-    if hasattr(_lr_model, "calibrated_classifiers_"):
-        base_model = _lr_model.calibrated_classifiers_[0].estimator
-    else:
-        base_model = _lr_model
-        
-    weights = base_model.coef_[0]
-    
-    # 4. Calculate exact SHAP values
-    # Positive value = Pushes risk UP (Attack)
-    # Negative value = Pushes risk DOWN (Legitimate)
-    contributions = {features[i]: weights[i] * X_scaled[i] for i in range(len(features))}
-    
-    return contributions
-
-
 # ─────────────────────────────────────────────
-# QUICK TEST — python models_main.py
+# QUICK TEST — python -m models.models_main
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    from mock_db import LOGIN_EVENTS
-    from extractor import extract_features
-    from cold_start import get_profile_signals
-    from decision import get_action
-    from risk_engine import compute_risk_score
+    from scoring.decision import get_action
+    from scoring.risk_engine import compute_risk_score
 
     print("=" * 62)
     print("  Model Training + Inference Test")

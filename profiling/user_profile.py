@@ -6,13 +6,8 @@
 # This file has no ML — pure profile read/write logic.
 # Called by cold_start.py and extractor.py
 
-import sys
-import os
-from hyperparams import register_paths
-register_paths()
-
-from mock_db import USER_PROFILES
-from hyperparams import TRUST, CLUSTERING
+from config.hyperparams import CLUSTERING, TRUST
+from database.mock_db import USER_PROFILES
 
 # ─────────────────────────────────────────────
 # DEVICE TRUST SETTINGS — loaded from 1.config/hyperparams.py

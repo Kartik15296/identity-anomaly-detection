@@ -1,16 +1,11 @@
-# 7.scoring/decision.py
+# scoring/decision.py
 # Maps a risk score to a security action.
 # Pure logic — no ML, no imports from other project modules.
 # Thresholds loaded from hyperparams.
 #
 # Called by Integration/processor.py after risk_engine produces a score.
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hyperparams import register_paths
-register_paths()
-
-from hyperparams import SCORING
+from config.hyperparams import SCORING
 
 
 # ─────────────────────────────────────────────
@@ -82,7 +77,7 @@ def requires_admin_alert(risk_score):
 
 
 # ─────────────────────────────────────────────
-# QUICK TEST — python decision.py
+# QUICK TEST — python -m scoring.decision
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
     test_scores = [

@@ -9,10 +9,6 @@
 import math
 import time
 import requests
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hyperparams import register_paths
-register_paths()
 # ─────────────────────────────────────────────
 # IN-MEMORY CACHE
 # Stores resolved IP → location results

@@ -1,4 +1,4 @@
-# 8.feedback/profile_updater.py
+# feedback/profile_updater.py
 # Updates user behavioral baseline after a confirmed feedback outcome.
 # Called by label_collector.py after every labeled event.
 #
@@ -6,13 +6,8 @@
 #   legitimate → add device/country/ip to known lists, update trust, update hours
 #   attack     → penalize device trust, do NOT add anything to known lists
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hyperparams import register_paths
-register_paths()
-
-from mock_db import get_user_profile
-from user_profile import (
+from database.mock_db import USER_PROFILES, get_event_by_id, get_user_profile
+from profiling.user_profile import (
     update_device_trust,
     add_known_device,
     add_known_country,
@@ -94,8 +89,6 @@ def bulk_update_from_labels(feedback_labels):
 
     feedback_labels : list of feedback dicts from label_collector
     """
-    from mock_db import get_event_by_id
-
     updated = 0
     skipped = 0
 
@@ -113,11 +106,9 @@ def bulk_update_from_labels(feedback_labels):
 
 
 # ─────────────────────────────────────────────
-# QUICK TEST — python profile_updater.py
+# QUICK TEST — python -m feedback.profile_updater
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    from mock_db import USER_PROFILES, get_event_by_id
-
     print("── Before updates ────────────────────────────────────")
     profile = get_user_profile("u01")
     print(f"  Kartik known devices  : {profile['known_devices']}")

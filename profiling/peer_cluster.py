@@ -23,16 +23,12 @@
 # Read mode  : fast, called per login event
 # Rebuild mode: slow, called weekly by retrain_scheduler
 
-import sys
-import os
-from hyperparams import register_paths
-register_paths()
-
 import math
 import numpy as np
 from collections import Counter
-from mock_db import PEER_CLUSTERS, USER_PROFILES
-from hyperparams import CLUSTERING
+
+from config.hyperparams import CLUSTERING
+from database.mock_db import PEER_CLUSTERS, USER_PROFILES
 
 
 # ─────────────────────────────────────────────

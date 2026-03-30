@@ -1,41 +1,14 @@
-# 1.config/hyperparams.py
+# config/hyperparams.py
 # Central hyperparameter registry for the entire system.
 # Every tunable value lives here — nothing hardcoded in module files.
 #
 # HOW TO USE:
-#   from hyperparams import register_paths, COLD_START, TRUST, ...
-#   register_paths()   ← call once at top of every file
+#   from config.hyperparams import COLD_START, TRUST, ...
 #
 # HOW TO TUNE:
 #   Change values here only. All modules pick up the new values automatically.
 #   Each section has comments explaining what each param controls and
 
-import sys
-import os
-
-def register_paths():
-    """
-    Adds all project folders to sys.path.
-    Call once at the top of every file in the project.
-    After this, any file can import from any folder directly.
-    """
-    root = os.path.dirname(os.path.abspath(__file__))
-    folders = [
-        root,
-        os.path.join(root, "1.config"),
-        os.path.join(root, "2.database"),
-        os.path.join(root, "3.ingestion"),
-        os.path.join(root, "4.features"),
-        os.path.join(root, "5.Profiling"),
-        os.path.join(root, "6.models"),
-        os.path.join(root, "7.scoring"),
-        os.path.join(root, "8.feedback"),
-        os.path.join(root, "Admin_dashboard"),
-        os.path.join(root, "Integration"),
-    ]
-    for folder in folders:
-        if folder not in sys.path:
-            sys.path.append(folder)
 #   the direction to move it (↑ = increase, ↓ = decrease) for desired effect.
 
 

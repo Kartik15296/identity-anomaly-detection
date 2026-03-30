@@ -1,13 +1,8 @@
-# 7.scoring/risk_engine.py
+# scoring/risk_engine.py
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hyperparams import register_paths
-register_paths()
-
-from models_main import get_model_scores
-from decision import get_action
-from explainer import get_reason_codes
+from models.models_main import get_model_scores
+from scoring.decision import get_action
+from scoring.explainer import get_reason_codes
 
 def compute_full_result(feature_vector, event=None):
     """
@@ -37,5 +32,11 @@ def compute_full_result(feature_vector, event=None):
         "action"      : decision["action"],
         "description" : decision["description"],
         "reason_codes": reason_codes,
+        "signals"     : feature_vector,
         "ml_scores"   : scores
     }
+
+
+def compute_risk_score(feature_vector, event=None):
+    """Backward-compatible helper returning only the numeric risk score."""
+    return compute_full_result(feature_vector, event=event)["risk_score"]
