@@ -12,8 +12,8 @@
 #   admin_block   → admin confirmed attack
 
 from datetime import datetime, timezone
-from database.mock_db import (
-    FEEDBACK_LABELS,
+from database.database_crud import (
+    get_all_feedback_labels,
     get_event_by_id,
     get_user_profile,
 )
@@ -66,9 +66,9 @@ def record_feedback(event_id, outcome, notes=""):
         "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
     }
 
-    # Store in mock_db feedback labels
-    # When PostgreSQL is added → INSERT INTO feedback_labels
-    FEEDBACK_LABELS.append(feedback)
+    # Store in database feedback labels
+    from database.database_crud import update_feedback as db_update_feedback
+    db_update_feedback(event_id, label, outcome, notes)
 
     print(f"[FEEDBACK] event={event_id} user={event['user_id']} "
           f"outcome={outcome} label={label}")
@@ -107,12 +107,12 @@ def _trigger_model_update(event, label):
 
 def get_all_labels():
     """Returns all recorded feedback labels."""
-    return FEEDBACK_LABELS
+    return get_all_feedback_labels()
 
 
 def get_labels_for_user(user_id):
     """Returns all feedback labels for a specific user."""
-    return [f for f in FEEDBACK_LABELS if f.get("user_id") == user_id]
+    return [f for f in get_all_feedback_labels() if f.get("user_id") == user_id]
 
 
 def get_recent_labels(since_timestamp):
@@ -121,7 +121,7 @@ def get_recent_labels(since_timestamp):
     Used by retrain_scheduler to count new labels since last retrain.
     """
     return [
-        f for f in FEEDBACK_LABELS
+        f for f in get_all_feedback_labels()
         if f.get("recorded_at", "") >= since_timestamp
     ]
 
@@ -131,11 +131,12 @@ def count_labels_since(since_timestamp):
     return len(get_recent_labels(since_timestamp))
 
 
+
 # ─────────────────────────────────────────────
 # QUICK TEST — python -m feedback.label_collector
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    print(f"Existing labels in mock_db : {len(FEEDBACK_LABELS)}")
+    print(f"Existing labels in database : {len(get_all_labels())}")
 
     print("\n── MFA pass — Arjun Singapore travel confirmed legit ──")
     fb = record_feedback("e013", "mfa_pass", notes="User confirmed business travel")
@@ -149,5 +150,5 @@ if __name__ == "__main__":
     fb = record_feedback("e012", "admin_approve", notes="Confirmed business trip")
     print(f"Recorded : {fb}")
 
-    print(f"\nTotal labels now : {len(FEEDBACK_LABELS)}")
+    print(f"\nTotal labels now : {len(get_all_labels())}")
     print(f"Labels for u01   : {len(get_labels_for_user('u01'))}")

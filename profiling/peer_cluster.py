@@ -26,9 +26,8 @@
 import math
 import numpy as np
 from collections import Counter
-
+from database.database_crud import get_peer_cluster, get_all_user_profiles
 from config.hyperparams import CLUSTERING
-from database.mock_db import PEER_CLUSTERS, USER_PROFILES
 
 
 # ─────────────────────────────────────────────
@@ -36,14 +35,15 @@ from database.mock_db import PEER_CLUSTERS, USER_PROFILES
 # ─────────────────────────────────────────────
 
 def get_cluster(cluster_id):
-    return PEER_CLUSTERS.get(cluster_id, None)
+    return get_peer_cluster(cluster_id)
 
 
 def get_user_cluster(user_id):
     """
     Returns the cluster a user belongs to, or None if outlier/unassigned.
     """
-    profile = USER_PROFILES.get(user_id)
+    from database.database_crud import get_user_profile
+    profile = get_user_profile(user_id)
     if not profile:
         return None
     cluster_id = profile.get("peer_cluster_id")

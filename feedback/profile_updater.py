@@ -6,7 +6,7 @@
 #   legitimate → add device/country/ip to known lists, update trust, update hours
 #   attack     → penalize device trust, do NOT add anything to known lists
 
-from database.mock_db import USER_PROFILES, get_event_by_id, get_user_profile
+from database.database_crud import get_event_by_id, get_user_profile
 from profiling.user_profile import (
     update_device_trust,
     add_known_device,

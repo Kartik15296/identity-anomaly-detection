@@ -1,16 +1,6 @@
-# config/hyperparams.py
+# 1.config/hyperparams.py
 # Central hyperparameter registry for the entire system.
 # Every tunable value lives here — nothing hardcoded in module files.
-#
-# HOW TO USE:
-#   from config.hyperparams import COLD_START, TRUST, ...
-#
-# HOW TO TUNE:
-#   Change values here only. All modules pick up the new values automatically.
-#   Each section has comments explaining what each param controls and
-
-#   the direction to move it (↑ = increase, ↓ = decrease) for desired effect.
-
 
 # ═════════════════════════════════════════════════════════════════
 # COLD START  —  5.Profiling/cold_start.py

@@ -16,7 +16,7 @@ import math
 from scipy import stats
 
 from config.hyperparams import DRIFT
-from database.mock_db import LOGIN_EVENTS
+from database.database_crud import get_all_login_events
 from features.extractor import extract_features
 
 # ─────────────────────────────────────────────

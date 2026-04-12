@@ -3,6 +3,20 @@ name = "identity-anomaly-detection"
 version = "0.1.0"
 requires-python = ">=3.10"
 
+[tool.setuptools]
+packages = [
+    "config",
+    "database",
+    "features",
+    "feedback",
+    "ingestion",
+    "integration",
+    "models",
+    "profiling",
+    "scoring",
+    "admin_dashboard",
+]
+
 [tool.pyright]
 include = [
     ".",

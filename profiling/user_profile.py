@@ -1,13 +1,13 @@
 # 5.Profiling/user_profile.py
 # Manages individual user behavioral baselines.
-# All reads come from mock_db (later PostgreSQL).
-# All writes update the in-memory mock_db dict (later DB UPDATE queries).
+# All reads come from database_crud (MongoDB).
+# All writes update the database.
 #
 # This file has no ML — pure profile read/write logic.
 # Called by cold_start.py and extractor.py
 
-from config.hyperparams import CLUSTERING, TRUST
-from database.mock_db import USER_PROFILES
+from config.hyperparams import TRUST, CLUSTERING
+from database.database_crud import get_user_profile, get_all_user_profiles
 
 # ─────────────────────────────────────────────
 # DEVICE TRUST SETTINGS — loaded from 1.config/hyperparams.py
@@ -32,7 +32,7 @@ def get_profile(user_id):
     Returns the full profile dict for a user.
     Returns None if user not found.
     """
-    return USER_PROFILES.get(user_id, None)
+    return get_user_profile(user_id)
 
 
 def is_known_device(profile, device_id):
@@ -256,7 +256,7 @@ def update_login_hours(profile, login_hour, current_timestamp=None):
     else:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    # Load existing weighted hour map
+    # Load existing weighted hour  map
     # Format: { "9": {"weight": 0.85, "last_seen": "2026-03-12 09:00:00"} }
     hour_weights = profile.get("login_hour_weights", {})
 

@@ -7,26 +7,25 @@
 # Phase 2 — transition  (30–100 events) : linear blend
 # Phase 3 — mature      (100+ events)   : full individual profile
 
-from config.hyperparams import CLUSTERING, COLD_START
-from database.mock_db import LOGIN_EVENTS, USER_PROFILES
-from profiling.peer_cluster import (
-    compute_peer_deviation_score,
-    get_cluster_typical_hours,
-    get_user_cluster,
-    get_user_membership_confidence,
-    is_common_country,
-    is_common_device_type,
-    is_common_ip_subnet,
-)
-from profiling.user_profile import (
-    get_device_trust,
-    get_hour_deviation,
+from user_profile import (
     get_profile,
-    increment_event_count,
     is_known_device,
     is_known_country,
     is_known_ip,
+    get_hour_deviation,
+    get_device_trust,
+    increment_event_count,
 )
+from peer_cluster import (
+    get_user_cluster,
+    is_common_device_type,
+    is_common_country,
+    is_common_ip_subnet,
+    get_cluster_typical_hours,
+    compute_peer_deviation_score,
+    get_user_membership_confidence,
+)
+from config.hyperparams import COLD_START, CLUSTERING
 
 # ─────────────────────────────────────────────
 # PHASE THRESHOLDS — loaded from 1.config/hyperparams.py
@@ -216,14 +215,22 @@ def get_profile_signals(user_id, event):
 # QUICK TEST — python cold_start.py
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
+    from database.database_crud import get_all_login_events, get_event_by_id
+    from config.hyperparams import CLUSTERING
+
     test_cases = [
         ("u01", "e003", "Mature user   — Kartik, normal office login"),
         ("u01", "e011", "Mature user   — Kartik, London attack"),
         ("u04", "e014", "Cold start    — Sneha, first login"),
     ]
 
+    all_events = get_all_login_events()
     for user_id, event_id, label in test_cases:
-        event   = next(e for e in LOGIN_EVENTS if e["event_id"] == event_id)
+        event   = next((e for e in all_events if e["event_id"] == event_id), None)
+        if not event:
+            event = get_event_by_id(event_id)
+        if not event:
+            continue
         signals = get_profile_signals(user_id, event)
         print(f"\n{'─'*55}")
         print(f"  {label}")

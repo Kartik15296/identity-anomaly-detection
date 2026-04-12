@@ -11,7 +11,7 @@
 from datetime import datetime, timedelta, timezone
 
 from config.hyperparams import CLUSTERING, RETRAINING
-from database.mock_db import FEEDBACK_LABELS, LOGIN_EVENTS
+from database.database_crud import get_all_feedback_labels, get_all_login_events
 from features.drift_monitor import check_drift
 from features.extractor import extract_features
 from feedback.label_collector import count_labels_since, get_all_labels
@@ -44,7 +44,7 @@ def check_drift_trigger():
 
     Returns (triggered: bool, reason: str)
     """
-    all_events = LOGIN_EVENTS
+    all_events = get_all_login_events()
 
     if len(all_events) < 10:
         return False, "insufficient_data"

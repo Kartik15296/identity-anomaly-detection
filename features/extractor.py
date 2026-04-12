@@ -9,14 +9,14 @@
 # integration/processor.py merges both outputs into the final feature vector.
 #
 # Dependency direction:
-#   features → database.mock_db (data)
+#   features → database.database_crud (data)
 #   features → geo_utils (utility)
 #   features → config.hyperparams (config)
 #   NO imports from profiling
 
 from datetime import datetime
 
-from database.mock_db import LOGIN_EVENTS, get_user_events, get_user_profile
+from database.database_crud import get_user_events, get_user_profile
 from features.geo_utils import get_distance_km, get_travel_speed_kmh, resolve_ip
 
 

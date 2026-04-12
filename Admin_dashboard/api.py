@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from database.mock_db import FEEDBACK_LABELS, LOGIN_EVENTS, USER_PROFILES
+from database.database_crud import get_all_feedback_labels, get_all_login_events, get_all_user_profiles
 from features.extractor import extract_features
 from feedback.label_collector import record_feedback
 from profiling.cold_start import get_profile_signals
@@ -59,8 +59,9 @@ def _build_alert(event):
     Builds a single alert dict for the frontend from a raw login event.
     Runs the full scoring pipeline to get risk score and reason codes.
     """
+    from database.database_crud import get_user_profile
     user_id  = event["user_id"]
-    profile  = USER_PROFILES.get(user_id, {})
+    profile  = get_user_profile(user_id) or {}
 
     # Run scoring pipeline
     try:
@@ -75,11 +76,11 @@ def _build_alert(event):
     if not requires_admin_alert(result["risk_score"]):
         return None
 
-    # Check if already actioned (exists in FEEDBACK_LABELS)
+    # Check if already actioned (exists in feedback labels)
     already_actioned = any(
         f["event_id"] == event["event_id"]
         and f["source"] in ("admin_approve", "admin_block")
-        for f in FEEDBACK_LABELS
+        for f in get_all_feedback_labels()
     )
     if already_actioned:
         return None
@@ -120,7 +121,7 @@ def get_alerts():
     Excludes events already actioned by admin.
     """
     alerts = []
-    for event in LOGIN_EVENTS:
+    for event in get_all_login_events():
         alert = _build_alert(event)
         if alert:
             alerts.append(alert)
@@ -164,7 +165,7 @@ def get_stats():
     """
     Returns summary statistics for the dashboard header.
     """
-    all_alerts = [_build_alert(e) for e in LOGIN_EVENTS]
+    all_alerts = [_build_alert(e) for e in get_all_login_events()]
     all_alerts = [a for a in all_alerts if a is not None]
 
     # Include already-actioned events for historical counts
@@ -172,7 +173,7 @@ def get_stats():
     pending       = sum(1 for a in all_alerts)
 
     admin_actions = [
-        f for f in FEEDBACK_LABELS
+        f for f in get_all_feedback_labels()
         if f["source"] in ("admin_approve", "admin_block")
     ]
     total_blocked  = sum(1 for f in admin_actions if f["label"] == "attack")
@@ -188,6 +189,6 @@ def get_stats():
         "total_blocked"  : total_blocked,
         "total_approved" : total_approved,
         "avg_risk_score" : avg_risk,
-        "total_users"    : len(USER_PROFILES),
+        "total_users"    : len(get_all_user_profiles()),
     }
     

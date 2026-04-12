@@ -13,7 +13,6 @@
 #   4. Risk scoring          (scoring/risk_engine.py)
 #   5. Return full result
 
-from database.mock_db import LOGIN_EVENTS
 from features.extractor import extract_features
 from profiling.cold_start import get_profile_signals
 from scoring.risk_engine import compute_full_result
@@ -23,7 +22,7 @@ def process_login_event(event):
     """
     Runs a raw login event through the full pipeline.
 
-    Input  : one login event dict (from mock_db or live ingestion)
+    Input  : one login event dict (from database or live ingestion)
     Output : complete result dict
 
     {

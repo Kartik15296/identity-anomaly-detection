@@ -1,4 +1,4 @@
-# models/models_main.py
+# 6.models/models_main.py
 # Real ML model layer — replaces the mock stub entirely.
 #
 # Two models:
@@ -36,26 +36,20 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import StandardScaler
 
 from config.hyperparams import MODELS
-from database.mock_db import FEEDBACK_LABELS, LOGIN_EVENTS
-from features.extractor import extract_features
-from profiling.cold_start import get_profile_signals
-
-# ─────────────────────────────────────────────
-# PATHS
-# ─────────────────────────────────────────────
-_ROOT        = Path(os.path.dirname(os.path.abspath(__file__)))
-_ARTIFACTS   = _ROOT / "artifacts"
-_IF_PATH     = _ARTIFACTS / "isolation_forest.pkl"
-_LR_PATH     = _ARTIFACTS / "logistic_regression.pkl"
-_SCALER_PATH = _ARTIFACTS / "if_scaler.pkl"
-_ARTIFACTS.mkdir(exist_ok=True)
-
 
 # ─────────────────────────────────────────────
 # FEATURE SCHEMA
 # Order matters — numpy arrays are positional.
 # ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# ARTIFACT PATHS
+# ─────────────────────────────────────────────
+_ARTIFACT_DIR = Path(__file__).parent / "artifacts"
+_ARTIFACT_DIR.mkdir(exist_ok=True)
 
+_IF_PATH     = _ARTIFACT_DIR / "isolation_forest.pkl"
+_SCALER_PATH = _ARTIFACT_DIR / "scaler.pkl"
+_LR_PATH     = _ARTIFACT_DIR / "logistic_regression.pkl"
 # IF gets all signals — unsupervised, no label bias
 IF_FEATURES = [
     "login_hour",
@@ -127,10 +121,14 @@ def _build_normal_training_data():
     Training data = confirmed-legit events + low-suspicion heuristic events
     + synthetic normal samples to meet minimum training size.
     """
-    approved_ids = {f["event_id"] for f in FEEDBACK_LABELS if f["label"] == "legitimate"}
+    from database.database_crud import get_all_login_events, get_all_feedback_labels
+    from features.extractor import extract_features
+    from profiling.cold_start import get_profile_signals
+
+    approved_ids = {f["event_id"] for f in get_all_feedback_labels() if f["label"] == "legitimate"}
     normal_vectors = []
 
-    for event in LOGIN_EVENTS:
+    for event in get_all_login_events():
         try:
             raw  = extract_features(event)
             prof = get_profile_signals(event["user_id"], event)
@@ -182,7 +180,7 @@ def _train_isolation_forest():
         contamination = MODELS["IF_CONTAMINATION"],
         max_samples   = "auto",
         random_state  = MODELS["IF_RANDOM_STATE"],
-        n_jobs        = 1,
+        n_jobs        = -1,
     )
     _if_model.fit(X_scaled)
     joblib.dump(_if_model,  _IF_PATH)
@@ -199,10 +197,14 @@ def _build_labeled_training_data():
     Builds (X, y) from feedback labels + pending labels + synthetic samples.
     y: 1 = attack, 0 = legitimate.
     """
-    event_map = {e["event_id"]: e for e in LOGIN_EVENTS}
+    from database.database_crud import get_all_login_events, get_all_feedback_labels
+    from features.extractor import extract_features
+    from profiling.cold_start import get_profile_signals
+
+    event_map = {e["event_id"]: e for e in get_all_login_events()}
     X, y = [], []
 
-    all_feedback = list(FEEDBACK_LABELS) + [
+    all_feedback = list(get_all_feedback_labels()) + [
         {"event_id": "synthetic", "label": lb, "_fv": fv}
         for fv, lb in _pending_labels
     ]
@@ -271,9 +273,10 @@ def _train_logistic_regression(X=None, y=None):
         max_iter     = 1000,
         random_state = MODELS["LR_RANDOM_STATE"],
     )
-    cv = min(3, max(2, n_attacks, n_legit))
+    
+    cv = min(3, max(2, min(n_attacks, n_legit)))
     calibrated = CalibratedClassifierCV(estimator=base_lr, method="sigmoid", cv=cv)
-
+    
     scaler   = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     calibrated.fit(X_scaled, y)
@@ -314,14 +317,22 @@ def _log_lr_weights(calibrated, scaler):
 def get_anomaly_score(feature_vector):
     """
     Returns float 0.0 (normal) → 1.0 (highly anomalous).
-    Maps IF.score_samples() range [-0.5, 0.5] → [1.0, 0.0].
+    Uses decision_function: >0 is normal, <0 is anomaly.
     """
+    global _if_model, _if_scaler
     _ensure_models_loaded()
     x        = _extract_if_vector(feature_vector).reshape(1, -1)
     x_scaled = _if_scaler.transform(x)
-    raw      = _if_model.score_samples(x_scaled)[0]
-    clipped  = np.clip(raw, -0.5, 0.5)
-    return round(float(1.0 - (clipped + 0.5)), 4)
+    
+    # decision_function typically returns values between -0.5 and 0.5
+    raw_score = _if_model.decision_function(x_scaled)[0]
+    
+    # Map to 0.0 (normal) to 1.0 (anomaly)
+    # If raw_score is 0.5 (very normal) -> 0.5 - 0.5 = 0.0 risk
+    # If raw_score is -0.5 (highly anomalous) -> 0.5 - (-0.5) = 1.0 risk
+    risk = 0.5 - raw_score
+    
+    return round(float(np.clip(risk, 0.0, 1.0)), 4)
 
 
 def get_attack_probability(feature_vector):
@@ -329,6 +340,7 @@ def get_attack_probability(feature_vector):
     Returns float 0.0 (legitimate) → 1.0 (attack).
     From calibrated LR predict_proba, class index 1 = attack.
     """
+    global _lr_pipeline
     _ensure_models_loaded()
     x        = _extract_lr_vector(feature_vector).reshape(1, -1)
     x_scaled = _lr_pipeline["scaler"].transform(x)
@@ -392,6 +404,7 @@ def get_feature_contributions(feature_vector):
     Returns per-feature contribution to attack probability.
     For calibrated LR: contribution_i = coef_i * scaled_x_i (exact, no approximation).
     Positive = pushes toward attack. Negative = pushes toward legitimate.
+    global _lr_pipeline
     """
     _ensure_models_loaded()
     x        = _extract_lr_vector(feature_vector)
@@ -406,6 +419,7 @@ def get_feature_contributions(feature_vector):
 
 
 def get_model_info():
+    global _if_model, _lr_pipeline
     """Returns summary of loaded models — for admin dashboard health panel."""
     _ensure_models_loaded()
     return {
@@ -426,13 +440,18 @@ def get_model_info():
         },
     }
 
+
 # ─────────────────────────────────────────────
-# QUICK TEST — python -m models.models_main
+# QUICK TEST — python models_main.py
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
+    from database.database_crud import get_all_login_events, get_event_by_id
+    from features.extractor import extract_features
+    from profiling.cold_start import get_profile_signals
     from scoring.decision import get_action
     from scoring.risk_engine import compute_risk_score
-
+    from scoring.risk_engine import compute_full_result
+    
     print("=" * 62)
     print("  Model Training + Inference Test")
     print("=" * 62)
@@ -454,25 +473,36 @@ if __name__ == "__main__":
     print(f"  {'Scenario':<35} {'anomaly':>8}  {'attack_p':>9}  {'action':>12}")
     print(f"{'─'*62}")
 
+    all_events = get_all_login_events()
     for user_id, event_id, label in test_cases:
-        event  = next(e for e in LOGIN_EVENTS if e["event_id"] == event_id)
-        raw    = extract_features(event)
-        prof   = get_profile_signals(user_id, event)
-        fv     = {**raw, **prof}
-        scores = get_model_scores(fv)
-        risk   = compute_risk_score(fv)
-        action = get_action(risk)["action"]
-        print(f"  {label:<35} {scores['anomaly_score']:>8.4f}  "
-              f"{scores['attack_probability']:>9.4f}  {action:>12}")
+            event  = next((e for e in all_events if e["event_id"] == event_id), None)
+            if not event:
+                event = get_event_by_id(event_id)
+            if not event:
+                continue
+            raw    = extract_features(event)
+            prof   = get_profile_signals(user_id, event)
+            fv     = {**raw, **prof}
+            
+            scores = get_model_scores(fv)
+            
+            full_result = compute_full_result(fv, event=event) 
+            action = full_result["action"]
+            
+            print(f"  {label:<35} {scores['anomaly_score']:>8.4f}  "
+                f"{scores['attack_probability']:>9.4f}  {action:>12}")
 
     print(f"\n{'─'*62}")
     print("  Feature contributions — attack event (e011):")
     print(f"{'─'*62}")
-    event = next(e for e in LOGIN_EVENTS if e["event_id"] == "e011")
-    fv    = {**extract_features(event), **get_profile_signals("u01", event)}
-    for feat, val in sorted(get_feature_contributions(fv).items(), key=lambda x: -abs(x[1])):
-        bar = "█" * int(abs(val) * 60)
-        print(f"  {feat:<30}  {val:+.4f}  {bar}")
+    event = next((e for e in all_events if e["event_id"] == "e011"), None)
+    if not event:
+        event = get_event_by_id("e011")
+    if event:
+        fv    = {**extract_features(event), **get_profile_signals("u01", event)}
+        for feat, val in sorted(get_feature_contributions(fv).items(), key=lambda x: -abs(x[1])):
+            bar = "█" * int(abs(val) * 60)
+            print(f"  {feat:<30}  {val:+.4f}  {bar}")
 
     print(f"\n{'─'*62}")
     print("  Model info:")
@@ -485,7 +515,9 @@ if __name__ == "__main__":
     print(f"\n{'─'*62}")
     print("  Label accumulation simulation:")
     print(f"{'─'*62}")
-    event = next(e for e in LOGIN_EVENTS if e["event_id"] == "e011")
+    event = next((e for e in all_events if e["event_id"] == "e011"), None)
+    if not event:
+        event = get_event_by_id("e011")
     fv    = {**extract_features(event), **get_profile_signals("u01", event)}
     update_online_learner(fv, "attack")
     update_online_learner(fv, "attack")
